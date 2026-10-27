@@ -22,12 +22,3 @@ extension RecordingsError {
         }
     }
 }
-
-extension SQLiteValue {
-
-    /// The value as text, `nil` for NULL or an empty string.
-    var nonEmptyString: String? {
-        guard let text = string, !text.isEmpty else { return nil }
-        return text
-    }
-}

@@ -43,8 +43,8 @@ public struct RecordingStore: Sendable {
         do {
             try database.query("SELECT \(select) FROM ZCLOUDRECORDING ORDER BY ZDATE DESC") { row in
                 guard let seconds = row[3].double else { return }
-                let id = row[0].nonEmptyString ?? "row-\(row[15].int ?? 0)"
-                let flags = row[9].int ?? 0, shared = row[10].int ?? 0
+                let id = row[0].nonEmptyString ?? "row-\(row[15].truncatedInt ?? 0)"
+                let flags = row[9].truncatedInt ?? 0, shared = row[10].truncatedInt ?? 0
                 let file = row[6].nonEmptyString.map { locations.recordings.appendingPathComponent($0) }
                 let exists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
                 recordings.append(Recording(
@@ -54,7 +54,7 @@ public struct RecordingStore: Sendable {
                     duration: max(0, row[4].double ?? row[5].double ?? 0),
                     file: file?.path,
                     fileExists: exists,
-                    folder: row[7].int.flatMap { folders[$0] },
+                    folder: row[7].truncatedInt.flatMap { folders[$0] },
                     deleted: row[8].double.map { Date(timeIntervalSinceReferenceDate: $0) },
                     favorite: RecordingFlags.has(shared, RecordingFlags.favorite),
                     enhanced: RecordingFlags.has(shared, RecordingFlags.enhanced),
@@ -66,8 +66,8 @@ public struct RecordingStore: Sendable {
                     layered: RecordingFlags.has(flags, RecordingFlags.multipleTracks),
                     spatial: RecordingFlags.has(flags, RecordingFlags.spatial),
                     manuallyRenamed: RecordingFlags.has(flags, RecordingFlags.manuallyRenamed),
-                    skipSilence: (row[11].int ?? 0) != 0,
-                    studioVoice: (row[12].int ?? 0) != 0,
+                    skipSilence: (row[11].truncatedInt ?? 0) != 0,
+                    studioVoice: (row[12].truncatedInt ?? 0) != 0,
                     playbackPosition: row[13].double.flatMap { $0 > 0 ? $0 : nil },
                     playbackSpeed: row[14].double,
                     flags: flags,
@@ -104,7 +104,7 @@ public struct RecordingStore: Sendable {
         do {
             try database.query("SELECT ZUUID, ZENCRYPTEDNAME, ZCOUNTOFRECORDINGS, ZRANK FROM ZFOLDER ORDER BY ZRANK") { row in
                 folders.append(RecordingFolder(id: row[0].nonEmptyString, name: row[1].nonEmptyString ?? "Untitled folder",
-                                               recordings: row[2].int ?? 0, rank: row[3].int))
+                                               recordings: row[2].truncatedInt ?? 0, rank: row[3].truncatedInt))
             }
         } catch { throw RecordingsError(error) }
         return folders
@@ -115,7 +115,7 @@ public struct RecordingStore: Sendable {
         var names: [Int: String] = [:]
         do {
             try database.query("SELECT Z_PK, ZENCRYPTEDNAME FROM ZFOLDER") { row in
-                if let key = row[0].int, let name = row[1].nonEmptyString { names[key] = name }
+                if let key = row[0].truncatedInt, let name = row[1].nonEmptyString { names[key] = name }
             }
         } catch { throw RecordingsError(error) }
         return names

@@ -5,13 +5,14 @@
 //  Created by David Sherlock on 2026.
 //
 //  The Voice Memos library: CloudRecordings.db (Core Data, mirrored to
-//  iCloud) read from a private copy, and each recording's .m4a read for the
+//  iCloud) read from a private copy (swift-sqlite-reader's snapshot), and each recording's .m4a read for the
 //  transcript Voice Memos stores inside it. Nothing in Voice Memos' container
 //  is ever written; transcripts made on this Mac are kept in
 //  ``RecordingLocations/transcripts``.
 //
 
 import Foundation
+import SQLiteReader
 
 /// A Mac's voice recordings, read-only.
 public struct RecordingStore: Sendable {
@@ -30,8 +31,7 @@ public struct RecordingStore: Sendable {
     /// - Parameter readFiles: also open each file for its device (one small
     ///   read per recording); off, ``Recording/device`` is `.unknown`.
     public func recordings(readFiles: Bool = true) throws(RecordingsError) -> [Recording] {
-        let snapshot = try DatabaseSnapshot(of: locations.database)
-        let database = snapshot.database
+        let database = try open()
         let present = database.columns(of: "ZCLOUDRECORDING")
         guard !present.isEmpty else { throw .unreadable(locations.database.path, reason: "no ZCLOUDRECORDING table") }
         let folders = try folderNames(database)
@@ -40,39 +40,41 @@ public struct RecordingStore: Sendable {
                       "ZPLAYBACKPOSITION", "ZPLAYBACKSPEED", "Z_PK"]
         let select = wanted.map { present.contains($0) ? $0 : "NULL" }.joined(separator: ", ")
         var recordings: [Recording] = []
-        try database.query("SELECT \(select) FROM ZCLOUDRECORDING ORDER BY ZDATE DESC") { row in
-            guard let seconds = row.double(3) else { return }
-            let id = row.text(0) ?? "row-\(row.integer(15) ?? 0)"
-            let flags = row.integer(9) ?? 0, shared = row.integer(10) ?? 0
-            let file = row.text(6).map { locations.recordings.appendingPathComponent($0) }
-            let exists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-            recordings.append(Recording(
-                id: id,
-                title: row.text(1) ?? row.text(2) ?? "Untitled",
-                date: Date(timeIntervalSinceReferenceDate: seconds),
-                duration: max(0, row.double(4) ?? row.double(5) ?? 0),
-                file: file?.path,
-                fileExists: exists,
-                folder: row.integer(7).flatMap { folders[$0] },
-                deleted: row.double(8).map { Date(timeIntervalSinceReferenceDate: $0) },
-                favorite: RecordingFlags.has(shared, RecordingFlags.favorite),
-                enhanced: RecordingFlags.has(shared, RecordingFlags.enhanced),
-                musicMemo: RecordingFlags.has(shared, RecordingFlags.musicMemo),
-                recordedOnWatch: RecordingFlags.has(flags, RecordingFlags.recordedOnWatch) || RecordingFlags.has(shared, RecordingFlags.watchOS),
-                audioInICloudOnly: RecordingFlags.has(flags, RecordingFlags.audioNeedsDownload) || (file != nil && !exists),
-                transcribed: RecordingFlags.has(flags, RecordingFlags.hasBeenTranscribed),
-                hasTranscript: RecordingFlags.has(flags, RecordingFlags.transcriptExists),
-                layered: RecordingFlags.has(flags, RecordingFlags.multipleTracks),
-                spatial: RecordingFlags.has(flags, RecordingFlags.spatial),
-                manuallyRenamed: RecordingFlags.has(flags, RecordingFlags.manuallyRenamed),
-                skipSilence: (row.integer(11) ?? 0) != 0,
-                studioVoice: (row.integer(12) ?? 0) != 0,
-                playbackPosition: row.double(13).flatMap { $0 > 0 ? $0 : nil },
-                playbackSpeed: row.double(14),
-                flags: flags,
-                sharedFlags: shared
-            ))
-        }
+        do {
+            try database.query("SELECT \(select) FROM ZCLOUDRECORDING ORDER BY ZDATE DESC") { row in
+                guard let seconds = row[3].double else { return }
+                let id = row[0].nonEmptyString ?? "row-\(row[15].int ?? 0)"
+                let flags = row[9].int ?? 0, shared = row[10].int ?? 0
+                let file = row[6].nonEmptyString.map { locations.recordings.appendingPathComponent($0) }
+                let exists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+                recordings.append(Recording(
+                    id: id,
+                    title: row[1].nonEmptyString ?? row[2].nonEmptyString ?? "Untitled",
+                    date: Date(timeIntervalSinceReferenceDate: seconds),
+                    duration: max(0, row[4].double ?? row[5].double ?? 0),
+                    file: file?.path,
+                    fileExists: exists,
+                    folder: row[7].int.flatMap { folders[$0] },
+                    deleted: row[8].double.map { Date(timeIntervalSinceReferenceDate: $0) },
+                    favorite: RecordingFlags.has(shared, RecordingFlags.favorite),
+                    enhanced: RecordingFlags.has(shared, RecordingFlags.enhanced),
+                    musicMemo: RecordingFlags.has(shared, RecordingFlags.musicMemo),
+                    recordedOnWatch: RecordingFlags.has(flags, RecordingFlags.recordedOnWatch) || RecordingFlags.has(shared, RecordingFlags.watchOS),
+                    audioInICloudOnly: RecordingFlags.has(flags, RecordingFlags.audioNeedsDownload) || (file != nil && !exists),
+                    transcribed: RecordingFlags.has(flags, RecordingFlags.hasBeenTranscribed),
+                    hasTranscript: RecordingFlags.has(flags, RecordingFlags.transcriptExists),
+                    layered: RecordingFlags.has(flags, RecordingFlags.multipleTracks),
+                    spatial: RecordingFlags.has(flags, RecordingFlags.spatial),
+                    manuallyRenamed: RecordingFlags.has(flags, RecordingFlags.manuallyRenamed),
+                    skipSilence: (row[11].int ?? 0) != 0,
+                    studioVoice: (row[12].int ?? 0) != 0,
+                    playbackPosition: row[13].double.flatMap { $0 > 0 ? $0 : nil },
+                    playbackSpeed: row[14].double,
+                    flags: flags,
+                    sharedFlags: shared
+                ))
+            }
+        } catch { throw RecordingsError(error) }
         guard readFiles else { return recordings }
         return recordings.map { recording in
             guard recording.fileExists, let path = recording.file, let data = Self.contents(of: path) else { return recording }
@@ -95,25 +97,34 @@ public struct RecordingStore: Sendable {
 
     /// The user folders, by rank.
     public func folders() throws(RecordingsError) -> [RecordingFolder] {
-        let snapshot = try DatabaseSnapshot(of: locations.database)
-        let database = snapshot.database
+        let database = try open()
         let columns = database.columns(of: "ZFOLDER")
         guard !columns.isEmpty else { return [] }
         var folders: [RecordingFolder] = []
-        try database.query("SELECT ZUUID, ZENCRYPTEDNAME, ZCOUNTOFRECORDINGS, ZRANK FROM ZFOLDER ORDER BY ZRANK") { row in
-            folders.append(RecordingFolder(id: row.text(0), name: row.text(1) ?? "Untitled folder",
-                                           recordings: row.integer(2) ?? 0, rank: row.integer(3)))
-        }
+        do {
+            try database.query("SELECT ZUUID, ZENCRYPTEDNAME, ZCOUNTOFRECORDINGS, ZRANK FROM ZFOLDER ORDER BY ZRANK") { row in
+                folders.append(RecordingFolder(id: row[0].nonEmptyString, name: row[1].nonEmptyString ?? "Untitled folder",
+                                               recordings: row[2].int ?? 0, rank: row[3].int))
+            }
+        } catch { throw RecordingsError(error) }
         return folders
     }
 
-    func folderNames(_ database: SQLiteDatabase) throws(RecordingsError) -> [Int: String] {
+    func folderNames(_ database: SQLiteReader) throws(RecordingsError) -> [Int: String] {
         guard !database.columns(of: "ZFOLDER").isEmpty else { return [:] }
         var names: [Int: String] = [:]
-        try database.query("SELECT Z_PK, ZENCRYPTEDNAME FROM ZFOLDER") { row in
-            if let key = row.integer(0), let name = row.text(1) { names[key] = name }
-        }
+        do {
+            try database.query("SELECT Z_PK, ZENCRYPTEDNAME FROM ZFOLDER") { row in
+                if let key = row[0].int, let name = row[1].nonEmptyString { names[key] = name }
+            }
+        } catch { throw RecordingsError(error) }
         return names
+    }
+
+    /// A private copy of the store and its log, deleted when the reader goes:
+    /// the live store is never opened.
+    private func open() throws(RecordingsError) -> SQLiteReader {
+        do { return try SQLiteReader(path: locations.database, opening: .snapshot) } catch { throw RecordingsError(error) }
     }
 
     // MARK: Transcripts
@@ -127,7 +138,7 @@ public struct RecordingStore: Sendable {
     /// The transcript Voice Memos stored inside the file.
     public func voiceMemosTranscript(for recording: Recording) throws(RecordingsError) -> Transcript? {
         guard recording.fileExists, let path = recording.file else { return nil }
-        switch PermissionCheck.access(path) {
+        switch FileChecks.access(path) {
         case .readable: break
         case .missing: return nil
         case .refused: throw .needsFullDiskAccess(path)

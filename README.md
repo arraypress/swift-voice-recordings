@@ -48,7 +48,7 @@ On one Mac (macOS 27.0.1, Voice Memos 27.0.1): every recording's flags decoded a
 
 ## Requirements
 
-macOS 14 or later. Swift 6.2. Depends on swift-subtitle-kit.
+macOS 14 or later. Swift 6.2. Depends on swift-subtitle-kit, and on [swift-sqlite-reader](https://github.com/arraypress/swift-sqlite-reader) to read the store from a private copy.
 
 ## Licence
 
